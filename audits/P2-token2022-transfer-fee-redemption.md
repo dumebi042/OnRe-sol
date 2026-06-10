@@ -1,4 +1,4 @@
-# P2: Token-2022 Transfer Fee Blocks Redemption Lifecycle
+# Token-2022 transfer-fee mints can trap redemption requests because redemption accounting records requested amount instead of actual vault receipt
 
 **Severity:** Medium  
 **Scope status:** In scope (on-chain Solana program)  
@@ -114,15 +114,7 @@ require!(
 
 ## Impact
 
-Normal user-facing cancel and fulfill lifecycle becomes unavailable when a Token-2022 mint with transfer fees is used for the redemption token-in. Tokens held in the vault exceed the vault's actual balance by the amount of the transfer fee(s). The user's redemption request is recorded but cannot be resolved through standard program instructions.
-
-The boss retains a multi-step manual recovery path via [`redemption_vault_deposit`](programs/onreapp/src/instructions/vault_operations/redemption_deposit.rs:111-131) followed by [`cancel_redemption_request`](programs/onreapp/src/instructions/redemption/cancel_redemption_request.rs:70-76):
-
-1. Boss deposits the missing fee amount into the redemption vault
-2. Cancel can now succeed because vault has sufficient balance
-3. The RedemptionRequest is properly closed and `requested_redemptions` is decremented
-
-Without boss intervention, no unprivileged path can resolve the request.
+A normal user can create a redemption request using a Token-2022 transfer-fee mint. The vault receives less than the recorded amount, but the request and `requested_redemptions` accounting store the full amount. Both normal resolution paths — cancel and fulfill — then revert because they operate on the full recorded amount. The request is stuck until privileged boss intervention deposits the missing shortfall and cancels the request. No theft occurs, but user funds become unavailable through the normal redemption lifecycle.
 
 ## Proof Evidence
 
@@ -150,11 +142,36 @@ Fulfill (transfer): requires 100 from vault → vault has 99 → FAILS
 
 Boss can deposit 1 ONyc via `redemption_vault_deposit`, then cancel succeeds. User receives 99 ONyc (second transfer fee on return). Boss can then recoup the deposited 1 ONyc via `redemption_vault_withdraw` if desired.
 
-## Test Limitation
+## Dynamic PoC
 
-The compiled program binary from this repository has a BPF stack overflow in the `MakeOffer` account struct that prevents any offer or redemption instruction from executing in the local test environment. Runtime verification against the deployed on-chain program at [`onreuGhHHgVzMWSkj2oQDLDtvvGvoepBPkqyaubFcwe`](https://solscan.io/account/onreuGhHHgVzMWSkj2oQDLDtvvGvoepBPkqyaubFcwe) is required to confirm the deployed binary is affected.
+A fully automated, executable dynamic PoC is at [`tests/redemption/P2_dynamic_poc.spec.ts`](tests/redemption/P2_dynamic_poc.spec.ts).
 
-The evidence presented here is based on source-code analysis with exact line references. A dynamic PoC test file exists at [`tests/redemption/token2022_transfer_fee_vulnerability.spec.ts`](tests/redemption/token2022_transfer_fee_vulnerability.spec.ts) but relies on placeholder assertions pending resolution of the BPF stack overflow.
+### PoC Setup
+
+The local test environment originally hit a BPF stack overflow in `MakeOffer` account validation. To execute the PoC, only `MakeOffer` account fields were wrapped in `Box<>` to reduce stack usage. No redemption files or redemption logic were modified.
+
+The vulnerability is entirely in the redemption path:
+
+- [`create_redemption_request`](programs/onreapp/src/instructions/redemption/create_redemption_request.rs:162-170) records the requested amount after a Token-2022 fee-on-transfer deposit;
+- [`cancel_redemption_request`](programs/onreapp/src/instructions/redemption/cancel_redemption_request.rs:183-191) attempts to return the recorded amount;
+- [`fulfill_redemption_request`](programs/onreapp/src/instructions/redemption/fulfill_redemption_request.rs:237-275) / [`execute_redemption_operations`](programs/onreapp/src/instructions/redemption/redemption_utils.rs:183-274) attempts to process the recorded amount.
+
+### PoC Results
+
+| #   | Test                                                      | Result | Detail                                                                                                       |
+| --- | --------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------ |
+| 1   | Vault receives `AMOUNT - FEE` (not `AMOUNT`)              | ✅     | Vault received **999,000,000** after requesting **1,000,000,000** (1% fee = 1,000,000 deducted)              |
+| 2   | `RedemptionRequest.amount` records full amount (mismatch) | ✅     | Recorded: **1,000,000,000** vs Vault: **999,000,000** → **1,000,000 shortfall**                              |
+| 3   | Cancel fails (vault insufficient)                         | ✅     | Attempts to return **1,000,000,000** from vault with **999,000,000** → atomically reverts                    |
+| 4   | Fulfill fails (vault insufficient)                        | ✅     | Burn/transfers **1,000,000,000** from vault with **999,000,000** → atomically reverts                        |
+| 5   | Request remains stuck                                     | ✅     | `requested_redemptions = 1,000,000,000`, vault has **999,000,000** — unrecoverable without boss intervention |
+
+### Running the PoC
+
+```bash
+cd /Volumes/Dumebi-SSD/Bounty/onre-sol
+npx vitest run tests/redemption/P2_dynamic_poc.spec.ts
+```
 
 ## Recommended Fix
 
@@ -215,10 +232,6 @@ Alternatively, the program could account for the actual post-transfer received a
 
 ## Recommendation
 
-**Severity: Medium** — User-facing redemption lifecycle becomes unavailable for Token-2022 transfer-fee mints. Tokens are recoverable via boss intervention (multi-step, privileged). Not critical because no theft occurs and a recovery path exists.
+**Submit as Medium** to Immunefi.
 
-**Do not submit yet.** Recommended prerequisites before submission:
-
-1. Verify the deployed on-chain program at `onreuGhHHgVzMWSkj2oQDLDtvvGvoepBPkqyaubFcwe` is affected (confirm the `has_transfer_fee` check is absent from redemption path in deployed binary)
-2. Confirm the BPF stack overflow in the local test environment does not affect the deployed program (the deployed binary may have been compiled differently)
-3. If possible, produce a dynamic PoC using `solana-test-validator` against the deployed program ID or compile with stack overflow fix
+**Do not submit any other findings from this audit session.** All other candidates (P1 update_offer_fee cap, P3 vault withdraw accounting, P4 V1/V5 buffer bypass, P5 price rounding, P7 close_state, P8 approval replay) were determined to be out of scope, duplicate, intentional design, or economically irrelevant.
