@@ -42,7 +42,7 @@ pub struct MakeOffer<'info> {
     pub vault_authority: UncheckedAccount<'info>,
 
     /// The input token mint for the offer
-    pub token_in_mint: InterfaceAccount<'info, Mint>,
+    pub token_in_mint: Box<InterfaceAccount<'info, Mint>>,
 
     /// Token program interface for the input token
     pub token_in_program: Interface<'info, TokenInterface>,
@@ -58,10 +58,10 @@ pub struct MakeOffer<'info> {
         associated_token::authority = vault_authority,
         associated_token::token_program = token_in_program
     )]
-    pub vault_token_in_account: InterfaceAccount<'info, TokenAccount>,
+    pub vault_token_in_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     /// The output token mint for the offer
-    pub token_out_mint: InterfaceAccount<'info, Mint>,
+    pub token_out_mint: Box<InterfaceAccount<'info, Mint>>,
 
     /// The offer account storing exchange configuration and pricing vectors
     ///
@@ -83,7 +83,7 @@ pub struct MakeOffer<'info> {
 
     /// Program state account containing boss authorization
     #[account(seeds = [seeds::STATE], bump = state.bump, has_one = boss)]
-    pub state: Account<'info, State>,
+    pub state: Box<Account<'info, State>>,
 
     /// The boss account authorized to create offers and pay for account creation
     #[account(mut)]
